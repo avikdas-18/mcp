@@ -34,7 +34,7 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 
-#define MCP4728_addr 0x60
+#define MCP4728_addr 0xC0
 
 #define MCP4728_MULTI_IR_CMD  	  0x40 ///< Command to write to the input register only
 #define MCP4728_MULTI_EEPROM_CMD  0x50 ///< Command to write to the input register and EEPROM
@@ -57,6 +57,8 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+ADC_HandleTypeDef hadc1;
+
 I2C_HandleTypeDef hi2c2;
 
 TIM_HandleTypeDef htim2;
@@ -65,21 +67,48 @@ TIM_HandleTypeDef htim2;
 
 uint8_t tx_buffer[5];
 uint8_t rx_buffer[5];
+uint8_t found_address = 0;
 
 uint16_t DAC_Channel_A_output = 0U;
 uint16_t DAC_Channel_B_output = 0U;
 uint16_t DAC_Channel_C_output = 0U;
 uint16_t DAC_Channel_D_output = 0U;
 
+uint16_t adc_raw_value = 0U;
+float measured_voltage;
+HAL_StatusTypeDef status;
+
 bool udac = false;
+
+uint8_t brightness_idx_a = 0;
+uint8_t brightness_idx_b = 20;
+uint8_t brightness_idx_c = 50;
+uint8_t brightness_idx_d = 80;
+
+const uint16_t brightness_wave[83] = {
+    // Fading UP (0 to 4090)
+    0, 100, 200, 300, 400, 500, 600, 700, 800, 900,
+    1000, 1100, 1200, 1300, 1400, 1500, 1600, 1700, 1800, 1900,
+    2000, 2100, 2200, 2300, 2400, 2500, 2600, 2700, 2800, 2900,
+    3000, 3100, 3200, 3300, 3400, 3500, 3600, 3700, 3800, 3900,
+    4000, 4090,
+
+    // Fading DOWN (4000 to 0)
+    4000, 3900, 3800, 3700, 3600, 3500, 3400, 3300, 3200, 3100,
+    3000, 2900, 2800, 2700, 2600, 2500, 2400, 2300, 2200, 2100,
+    2000, 1900, 1800, 1700, 1600, 1500, 1400, 1300, 1200, 1100,
+    1000, 900, 800, 700, 600, 500, 400, 300, 200, 100,
+    0
+};
 
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
-static void MX_I2C2_Init(void);
 static void MX_TIM2_Init(void);
+static void MX_I2C2_Init(void);
+static void MX_ADC1_Init(void);
 /* USER CODE BEGIN PFP */
 
 void setChannelvalue(uint8_t channel, uint16_t DAC_SetValue);
@@ -97,6 +126,7 @@ void setChannelvalue(uint8_t channel, uint16_t DAC_SetValue);
   */
 int main(void)
 {
+
   /* USER CODE BEGIN 1 */
 
   /* USER CODE END 1 */
@@ -119,9 +149,24 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
-  MX_I2C2_Init();
   MX_TIM2_Init();
+  MX_I2C2_Init();
+  MX_ADC1_Init();
   /* USER CODE BEGIN 2 */
+
+  for(uint8_t i = 1; i < 128; i++)
+  {
+      HAL_StatusTypeDef res = HAL_I2C_IsDeviceReady(&hi2c2, (uint16_t)(i<<1), 3, 5);
+      if(res == HAL_OK) {
+          found_address = i << 1;
+          break; // Stop at the first device found
+      }
+  }
+
+//  setChannelvalue(MCP4728_channel_A, 4000);
+//  setChannelvalue(MCP4728_channel_B, 3000);
+//  setChannelvalue(MCP4728_channel_C, 2000);
+//  setChannelvalue(MCP4728_channel_D, 1000);
 
   HAL_TIM_Base_Start_IT(&htim2);
 
@@ -162,7 +207,7 @@ void SystemClock_Config(void)
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
   RCC_OscInitStruct.PLL.PLLM = 8;
   RCC_OscInitStruct.PLL.PLLN = 50;
-  RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
+  RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV4;
   RCC_OscInitStruct.PLL.PLLQ = 7;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
   {
@@ -174,7 +219,7 @@ void SystemClock_Config(void)
   RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
                               |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
   RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
-  RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV2;
+  RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
   RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV4;
   RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV2;
 
@@ -182,6 +227,58 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
+}
+
+/**
+  * @brief ADC1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_ADC1_Init(void)
+{
+
+  /* USER CODE BEGIN ADC1_Init 0 */
+
+  /* USER CODE END ADC1_Init 0 */
+
+  ADC_ChannelConfTypeDef sConfig = {0};
+
+  /* USER CODE BEGIN ADC1_Init 1 */
+
+  /* USER CODE END ADC1_Init 1 */
+
+  /** Configure the global features of the ADC (Clock, Resolution, Data Alignment and number of conversion)
+  */
+  hadc1.Instance = ADC1;
+  hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV2;
+  hadc1.Init.Resolution = ADC_RESOLUTION_12B;
+  hadc1.Init.ScanConvMode = DISABLE;
+  hadc1.Init.ContinuousConvMode = DISABLE;
+  hadc1.Init.DiscontinuousConvMode = DISABLE;
+  hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
+  hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
+  hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
+  hadc1.Init.NbrOfConversion = 1;
+  hadc1.Init.DMAContinuousRequests = DISABLE;
+  hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
+  if (HAL_ADC_Init(&hadc1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_1;
+  sConfig.Rank = 1;
+  sConfig.SamplingTime = ADC_SAMPLETIME_480CYCLES;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN ADC1_Init 2 */
+
+  /* USER CODE END ADC1_Init 2 */
+
 }
 
 /**
@@ -202,7 +299,7 @@ static void MX_I2C2_Init(void)
   hi2c2.Instance = I2C2;
   hi2c2.Init.ClockSpeed = 100000;
   hi2c2.Init.DutyCycle = I2C_DUTYCYCLE_2;
-  hi2c2.Init.OwnAddress1 = 0;
+  hi2c2.Init.OwnAddress1 = 160;
   hi2c2.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
   hi2c2.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
   hi2c2.Init.OwnAddress2 = 0;
@@ -239,7 +336,7 @@ static void MX_TIM2_Init(void)
   htim2.Instance = TIM2;
   htim2.Init.Prescaler = 0;
   htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim2.Init.Period = 24999999;
+  htim2.Init.Period = 199999;
   htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
@@ -271,10 +368,12 @@ static void MX_TIM2_Init(void)
 static void MX_GPIO_Init(void)
 {
   GPIO_InitTypeDef GPIO_InitStruct = {0};
-/* USER CODE BEGIN MX_GPIO_Init_1 */
-/* USER CODE END MX_GPIO_Init_1 */
+  /* USER CODE BEGIN MX_GPIO_Init_1 */
+
+  /* USER CODE END MX_GPIO_Init_1 */
 
   /* GPIO Ports Clock Enable */
+  __HAL_RCC_GPIOE_CLK_ENABLE();
   __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_GPIOH_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
@@ -282,11 +381,21 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOD_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(CS_I2C_SPI_GPIO_Port, CS_I2C_SPI_Pin, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(OTG_FS_PowerSwitchOn_GPIO_Port, OTG_FS_PowerSwitchOn_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOD, LD4_Pin|LD3_Pin|LD5_Pin|LD6_Pin
                           |Audio_RST_Pin, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin : CS_I2C_SPI_Pin */
+  GPIO_InitStruct.Pin = CS_I2C_SPI_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(CS_I2C_SPI_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pin : OTG_FS_PowerSwitchOn_Pin */
   GPIO_InitStruct.Pin = OTG_FS_PowerSwitchOn_Pin;
@@ -308,22 +417,6 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(B1_GPIO_Port, &GPIO_InitStruct);
-
-  /*Configure GPIO pin : I2S3_WS_Pin */
-  GPIO_InitStruct.Pin = I2S3_WS_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  GPIO_InitStruct.Alternate = GPIO_AF6_SPI3;
-  HAL_GPIO_Init(I2S3_WS_GPIO_Port, &GPIO_InitStruct);
-
-  /*Configure GPIO pins : SPI1_SCK_Pin SPI1_MISO_Pin SPI1_MOSI_Pin */
-  GPIO_InitStruct.Pin = SPI1_SCK_Pin|SPI1_MISO_Pin|SPI1_MOSI_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  GPIO_InitStruct.Alternate = GPIO_AF5_SPI1;
-  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
   /*Configure GPIO pin : BOOT1_Pin */
   GPIO_InitStruct.Pin = BOOT1_Pin;
@@ -362,19 +455,63 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(OTG_FS_OverCurrent_GPIO_Port, &GPIO_InitStruct);
 
-/* USER CODE BEGIN MX_GPIO_Init_2 */
-/* USER CODE END MX_GPIO_Init_2 */
+  /*Configure GPIO pins : Audio_SCL_Pin Audio_SDA_Pin */
+  GPIO_InitStruct.Pin = Audio_SCL_Pin|Audio_SDA_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_AF_OD;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  GPIO_InitStruct.Alternate = GPIO_AF4_I2C1;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : MEMS_INT2_Pin */
+  GPIO_InitStruct.Pin = MEMS_INT2_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_EVT_RISING;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(MEMS_INT2_GPIO_Port, &GPIO_InitStruct);
+
+  /* USER CODE BEGIN MX_GPIO_Init_2 */
+
+  /* USER CODE END MX_GPIO_Init_2 */
 }
 
 /* USER CODE BEGIN 4 */
 
+
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
 	HAL_GPIO_TogglePin(LD4_GPIO_Port, LD4_Pin);
-	setChannelvalue(MCP4728_channel_A, DAC_Channel_A_output);
-	setChannelvalue(MCP4728_channel_B, DAC_Channel_B_output);
-	setChannelvalue(MCP4728_channel_C, DAC_Channel_C_output);
-	setChannelvalue(MCP4728_channel_D, DAC_Channel_D_output);
+
+	setChannelvalue(MCP4728_channel_A, brightness_wave[brightness_idx_a]);
+	brightness_idx_a++;
+
+	if(brightness_idx_a > 82)
+	{
+		brightness_idx_a = 0;
+	}
+
+	setChannelvalue(MCP4728_channel_B, brightness_wave[brightness_idx_b]);
+	brightness_idx_b++;
+
+	if(brightness_idx_b > 82)
+	{
+		brightness_idx_b = 0;
+	}
+
+	setChannelvalue(MCP4728_channel_C, brightness_wave[brightness_idx_c]);
+	brightness_idx_c++;
+
+	if(brightness_idx_c > 82)
+	{
+		brightness_idx_c = 0;
+	}
+
+	setChannelvalue(MCP4728_channel_D, brightness_wave[brightness_idx_d]);
+	brightness_idx_d++;
+
+	if(brightness_idx_d > 82)
+	{
+		brightness_idx_d = 0;
+	}
 }
 
 void setChannelvalue(uint8_t channel, uint16_t DAC_SetValue)
@@ -389,16 +526,16 @@ void setChannelvalue(uint8_t channel, uint16_t DAC_SetValue)
 
 	sequential_write_cmd = 0;
 
-	sequential_write_cmd |= (MCP4728_VREF << 15);
-	sequential_write_cmd |= (MCP4728_PD_Bits << 13);
-	sequential_write_cmd |= (MCP4728_Gain << 12);
+	sequential_write_cmd |= (MCP4728_VREF << 7);
+	sequential_write_cmd |= (MCP4728_PD_Bits << 5);
+	sequential_write_cmd |= (MCP4728_Gain << 4);
 	sequential_write_cmd |= ((DAC_SetValue & 0x0F00) >> 8);
 
 	tx_buffer[1] = sequential_write_cmd;
 
 	tx_buffer[2] = (DAC_SetValue & 0x00FF);
 
-	HAL_I2C_Master_Transmit(&hi2c2, MCP4728_addr, tx_buffer, 3, HAL_MAX_DELAY);
+	status = HAL_I2C_Master_Transmit(&hi2c2, MCP4728_addr, tx_buffer, 3, HAL_MAX_DELAY);
 }
 
 /* USER CODE END 4 */
@@ -417,8 +554,7 @@ void Error_Handler(void)
   }
   /* USER CODE END Error_Handler_Debug */
 }
-
-#ifdef  USE_FULL_ASSERT
+#ifdef USE_FULL_ASSERT
 /**
   * @brief  Reports the name of the source file and the source line number
   *         where the assert_param error has occurred.
